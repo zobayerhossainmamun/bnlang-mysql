@@ -1,0 +1,33 @@
+"use strict";
+
+ধ্রুবক crypto = require("crypto");
+ধ্রুবক { AUTH_PLUGINS } = require("./constants.bnl");
+
+ফাংশন scrambleNative(password, salt) {
+  যদি (!password) ফেরত Buffer.alloc(0);
+  ধ্রুবক pw = Buffer.from(password, "utf8");
+  ধ্রুবক stage1 = crypto.createHash("sha1").update(pw).digest();
+  ধ্রুবক stage2 = crypto.createHash("sha1").update(stage1).digest();
+  ধ্রুবক stage3 = crypto.createHash("sha1").update(salt).update(stage2).digest();
+  ধ্রুবক out = Buffer.allocUnsafe(stage3.length);
+  for (ধরি i = 0; i < stage3.length; i++) out[i] = stage3[i] ^ stage1[i];
+  ফেরত out;
+}
+
+ফাংশন scrambleCachingSha2(password, salt) {
+  যদি (!password) ফেরত Buffer.alloc(0);
+  ধ্রুবক pw = Buffer.from(password, "utf8");
+  ধ্রুবক s1 = crypto.createHash("sha256").update(pw).digest();
+  ধ্রুবক s2 = crypto.createHash("sha256").update(s1).digest();
+  ধ্রুবক s3 = crypto.createHash("sha256").update(s2).update(salt).digest();
+  ধ্রুবক out = Buffer.allocUnsafe(s1.length);
+  for (ধরি i = 0; i < s1.length; i++) out[i] = s1[i] ^ s3[i];
+  ফেরত out;
+}
+
+ফাংশন authResponse(plugin, password, salt) {
+  যদি (plugin === AUTH_PLUGINS.CACHING_SHA2) ফেরত scrambleCachingSha2(password, salt);
+  ফেরত scrambleNative(password, salt);
+}
+
+module.exports = { authResponse };

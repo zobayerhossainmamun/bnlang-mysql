@@ -1,0 +1,168 @@
+"use strict";
+ধ্রুবক { Buffer } = require("buffer");
+
+ফাংশন checkRead(offset, byteLength, length) {
+  যদি (!Number.isInteger(offset) || !Number.isInteger(byteLength))
+    throw নতুন TypeError("offset/byteLength must be integers");
+  যদি (offset < 0 || byteLength < 1)
+    throw নতুন RangeError("Invalid offset/byteLength");
+  যদি (offset + byteLength > length)
+    throw নতুন RangeError("Index out of range");
+}
+
+ফাংশন checkWrite(value, offset, byteLength, length) {
+  যদি (typeof value !== "number" && typeof value !== "bigint")
+    throw নতুন TypeError("value must be a number or bigint");
+  যদি (!Number.isInteger(offset) || !Number.isInteger(byteLength))
+    throw নতুন TypeError("offset/byteLength must be integers");
+  যদি (offset < 0 || byteLength < 1)
+    throw নতুন RangeError("Invalid offset/byteLength");
+  যদি (offset + byteLength > length)
+    throw নতুন RangeError("Index out of range");
+  ধ্রুবক max = (typeof value === "bigint")
+    ? (1n << (BigInt(byteLength) * 8n)) - 1n
+    : Math.pow(2, 8 * byteLength) - 1;
+  যদি (value < 0 || (typeof value === "bigint" ? value > max : value > max))
+    throw নতুন RangeError("value out of bounds");
+}
+
+যদি (typeof Buffer.prototype.readUIntLE !== "function") {
+  Buffer.prototype.readUIntLE = ফাংশন (offset, byteLength) {
+    checkRead(offset, byteLength, এটি.length);
+    ধরি val = 0;
+    ধরি mul = 1;
+    for (ধরি i = 0; i < byteLength; i++) {
+      val += এটি[offset + i] * mul;
+      mul *= 0x100;
+    }
+    ফেরত val;
+  };
+}
+
+যদি (typeof Buffer.prototype.readUInt16LE !== "function") {
+  Buffer.prototype.readUInt16LE = ফাংশন (offset) {
+    checkRead(offset, 2, এটি.length);
+    ফেরত এটি[offset] | (এটি[offset + 1] << 8);
+  };
+}
+
+যদি (typeof Buffer.prototype.readUInt32LE !== "function") {
+  Buffer.prototype.readUInt32LE = ফাংশন (offset) {
+    checkRead(offset, 4, এটি.length);
+    ফেরত (
+      এটি[offset] +
+      এটি[offset + 1] * 0x100 +
+      এটি[offset + 2] * 0x10000 +
+      এটি[offset + 3] * 0x1000000
+    );
+  };
+}
+
+যদি (typeof Buffer.prototype.readBigUInt64LE !== "function") {
+  Buffer.prototype.readBigUInt64LE = ফাংশন (offset) {
+    checkRead(offset, 8, এটি.length);
+    ধ্রুবক lo = BigInt(এটি.readUInt32LE(offset));
+    ধ্রুবক hi = BigInt(এটি.readUInt32LE(offset + 4));
+    ফেরত (hi << 32n) + lo;
+  };
+}
+
+যদি (typeof Buffer.prototype.writeUIntLE !== "function") {
+  Buffer.prototype.writeUIntLE = ফাংশন (value, offset, byteLength) {
+    checkWrite(value, offset, byteLength, এটি.length);
+    ধরি v = Number(value);
+    for (ধরি i = 0; i < byteLength; i++) {
+      এটি[offset + i] = v & 0xff;
+      v = Math.floor(v / 256);
+    }
+    ফেরত offset + byteLength;
+  };
+}
+
+যদি (typeof Buffer.prototype.writeUInt16LE !== "function") {
+  Buffer.prototype.writeUInt16LE = ফাংশন (value, offset) {
+    checkWrite(value, offset, 2, এটি.length);
+    ধ্রুবক v = value >>> 0;
+    এটি[offset] = v & 0xff;
+    এটি[offset + 1] = (v >>> 8) & 0xff;
+    ফেরত offset + 2;
+  };
+}
+
+যদি (typeof Buffer.prototype.writeUInt32LE !== "function") {
+  Buffer.prototype.writeUInt32LE = ফাংশন (value, offset) {
+    checkWrite(value, offset, 4, এটি.length);
+    ধ্রুবক v = value >>> 0;
+    এটি[offset] = v & 0xff;
+    এটি[offset + 1] = (v >>> 8) & 0xff;
+    এটি[offset + 2] = (v >>> 16) & 0xff;
+    এটি[offset + 3] = (v >>> 24) & 0xff;
+    ফেরত offset + 4;
+  };
+}
+
+যদি (typeof Buffer.prototype.writeBigUInt64LE !== "function") {
+  Buffer.prototype.writeBigUInt64LE = ফাংশন (value, offset) {
+    checkWrite(value, offset, 8, এটি.length);
+    ধরি v = BigInt(value);
+    for (ধরি i = 0; i < 8; i++) {
+      এটি[offset + i] = Number(v & 0xffn);
+      v >>= 8n;
+    }
+    ফেরত offset + 8;
+  };
+}
+
+ফাংশন readLenEncInt(buf, off) {
+  ধ্রুবক first = buf[off];
+  যদি (first < 0xfb) ফেরত [first, off + 1];
+  যদি (first === 0xfc) ফেরত [buf.readUInt16LE(off + 1), off + 3];
+  যদি (first === 0xfd)
+    ফেরত [buf.readUIntLE(off + 1, 3), off + 4];
+  যদি (first === 0xfe)
+    ফেরত [Number(buf.readBigUInt64LE(off + 1)), off + 9];
+  ফেরত [null, off + 1];
+}
+
+ফাংশন writeLenEncInt(n) {
+  যদি (n < 0xfb) ফেরত Buffer.from([n]);
+  যদি (n < 0x10000) {
+    ধ্রুবক b = Buffer.allocUnsafe(3);
+    b[0] = 0xfc; b.writeUInt16LE(n, 1); ফেরত b;
+  }
+  যদি (n < 0x1000000) {
+    ধ্রুবক b = Buffer.allocUnsafe(4);
+    b[0] = 0xfd; b.writeUIntLE(n, 1, 3); ফেরত b;
+  }
+  ধ্রুবক b = Buffer.allocUnsafe(9);
+  b[0] = 0xfe; b.writeBigUInt64LE(BigInt(n), 1); ফেরত b;
+}
+
+ফাংশন makePacket(payload, seq) {
+  ধ্রুবক header = Buffer.allocUnsafe(4);
+  header.writeUIntLE(payload.length, 0, 3);
+  header[3] = seq & 0xff;
+  ফেরত Buffer.concat([header, payload]);
+}
+
+ফাংশন splitPackets(buffer) {
+  ধ্রুবক out = [];
+  ধরি off = 0;
+  while (off + 4 <= buffer.length) {
+    ধ্রুবক len = buffer.readUIntLE(off, 3);
+    ধ্রুবক seq = buffer[off + 3];
+    ধ্রুবক start = off + 4;
+    ধ্রুবক end = start + len;
+    যদি (end > buffer.length) break;
+    out.push({ seq, payload: buffer.slice(start, end) });
+    off = end;
+  }
+  ফেরত { packets: out, rest: buffer.slice(off) };
+}
+
+module.exports = {
+  readLenEncInt,
+  writeLenEncInt,
+  makePacket,
+  splitPackets,
+};

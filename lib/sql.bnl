@@ -1,0 +1,37 @@
+"use strict";
+
+ধ্রুবক { Buffer } = require("buffer");
+
+ফাংশন escapeId(id) {
+  ফেরত "`" + String(id).replace(/`/g, "``") + "`";
+}
+
+ফাংশন escape(val) {
+  যদি (val === undefined || val === null) ফেরত "NULL";
+  বিকল্প (typeof val) {
+    অবস্থা "boolean": ফেরত val ? "true" : "false";
+    অবস্থা "number": ফেরত Number.isFinite(val) ? String(val) : "NULL";
+    অবস্থা "object":
+      যদি (val instanceof Date) ফেরত "'" + dateToString(val) + "'";
+      যদি (Buffer.isBuffer(val)) ফেরত "X'" + val.toString("hex") + "'";
+      ফেরত "'" + JSON.stringযদিy(val).replace(/'/g, "''") + "'";
+    অন্যথায়:
+      ফেরত "'" + String(val).replace(/\\/g, "\\\\").replace(/'/g, "''") + "'";
+  }
+}
+
+ফাংশন dateToString(d) {
+  ধ্রুবক pad = (n) => (n < 10 ? "0" + n : "" + n);
+  ফেরত (
+    d.getUTCFullYear() + "-" + pad(d.getUTCMonth() + 1) + "-" + pad(d.getUTCDate()) +
+    " " + pad(d.getUTCHours()) + ":" + pad(d.getUTCMinutes()) + ":" + pad(d.getUTCSeconds())
+  );
+}
+
+ফাংশন format(sql, params) {
+  যদি (!params) ফেরত sql;
+  ধরি i = 0;
+  ফেরত sql.replace(/\?/g, () => escape(params[i++]));
+}
+
+module.exports = { escape, escapeId, format };

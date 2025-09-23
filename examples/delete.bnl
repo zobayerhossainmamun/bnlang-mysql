@@ -1,0 +1,15 @@
+"use strict";
+ধ্রুবক conn = require("./connection.bnl");
+
+অসমলয় function main(){
+  চেষ্টা{
+    অপেক্ষা conn.connect();
+    ধ্রুবক result = অপেক্ষা conn.query("DELETE FROM users WHERE id = ?", [63]);
+    লিখুন('Delete result:', result);
+  }ধরুন(err){
+    console.error("Connection error: ", err);
+  }finally{
+    অপেক্ষা conn.end();
+  }
+}
+main();

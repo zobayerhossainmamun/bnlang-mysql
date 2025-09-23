@@ -1,0 +1,39 @@
+"use strict";
+
+ধ্রুবক mysql = require("../index.bnl");
+ধ্রুবক conn = mysql.createConnection({
+  host: "127.0.0.1",
+  user: "root",
+  password: "",
+  database: "myapp",
+  port: 3306,
+  ssl: false
+});
+
+ধ্রুবক users = [
+  { name: "Alice Johnson",   email: "alice.johnson@example.com",   password: "password123" },
+  { name: "Bob Smith",       email: "bob.smith@example.com",       password: "qwerty456" },
+  { name: "Charlie Brown",   email: "charlie.brown@example.com",   password: "letmein789" },
+  { name: "Diana Prince",    email: "diana.prince@example.com",    password: "wonderwoman" },
+  { name: "Ethan Hunt",      email: "ethan.hunt@example.com",      password: "mission123" },
+  { name: "Fiona Gallagher", email: "fiona.gallagher@example.com", password: "shameless!" },
+  { name: "George Miller",   email: "george.miller@example.com",   password: "gmiller2024" },
+  { name: "Hannah Lee",      email: "hannah.lee@example.com",      password: "hl_passwd" },
+  { name: "Ian Wright",      email: "ian.wright@example.com",      password: "wright321" },
+  { name: "Julia Roberts",   email: "julia.roberts@example.com",   password: "jroberts!" },
+];
+
+অসমলয় function main(){
+  চেষ্টা{
+    অপেক্ষা conn.connect();
+    for (ধ্রুবক user of users) {
+      ধ্রুবক res = অপেক্ষা conn.query("INSERT INTO users(name, email, password) VALUES(?, ?, ?)", [user.name, user.email, user.password]);
+      লিখুন(`Inserted user with ID: ${res.insertId}`);
+    }
+  }ধরুন(err){
+    console.error("Connection error: ", err);
+  }finally{
+    অপেক্ষা conn.end();
+  }
+}
+main();

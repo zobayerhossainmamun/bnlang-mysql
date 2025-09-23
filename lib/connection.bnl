@@ -1,0 +1,479 @@
+"use strict";
+
+ধ্রুবক net = require("net");
+ধ্রুবক tls = require("tls");
+ধ্রুবক dns = require("dns");
+ধ্রুবক { Buffer } = require("buffer");
+ধ্রুবক { splitPackets, makePacket } = require("./packets.bnl");
+ধ্রুবক { buildSSLRequest, buildHandshakeResponse41, buildCommandPacket } = require("./protocol.bnl");
+ধ্রুবক { CAPABILITIES, COMMANDS, ERRORS, AUTH_PLUGINS } = require("./constants.bnl");
+
+ফাংশন parseColumnName(b) {
+  ধ্রুবক { readLenEncInt } = require("./packets.bnl");
+  ধরি off = 0;
+  ফাংশন readStr() {
+    যদি (b[off] === 0xfb) { off += 1; ফেরত null; }
+    ধ্রুবক [len, n] = readLenEncInt(b, off); off = n;
+    ধ্রুবক s = b.slice(off, off + len).toString("utf8");
+    off += len;
+    ফেরত s;
+  }
+  readStr();
+  readStr();
+  readStr();
+  readStr();
+  ধ্রুবক name = readStr();
+  readStr();
+  ফেরত name || "";
+}
+
+ফাংশন parseTextRowAsObject(b, colCount, fields) {
+  ধ্রুবক { readLenEncInt } = require("./packets.bnl");
+  ধরি off = 0;
+  ধ্রুবক row = {};
+  for (ধরি i = 0; i < colCount; i++) {
+    যদি (b[off] === 0xfb) { row[fields[i]] = null; off += 1; continue; }
+    ধ্রুবক [len, n] = readLenEncInt(b, off); off = n;
+    row[fields[i]] = b.slice(off, off + len).toString("utf8");
+    off += len;
+  }
+  ফেরত row;
+}
+
+শ্রেণী Connection {
+  constructor(options = {}) {
+    এটি.opts = Object.assign(
+      {
+        host: "localhost",
+        port: 3306,
+        user: "root",
+        password: "",
+        database: undefined,
+        ssl: false,
+        connectTimeout: 10000,
+        socketTimeout: 0,
+        keepAlive: true,
+        debug: false,
+        readTimeout: 15000,
+      },
+      options
+    );
+
+    এটি.socket = null;
+    এটি.tls = !!এটি.opts.ssl;
+    এটি.seq = 0;
+    এটি.recv = Buffer.alloc(0);
+    এটি.connected = false;
+    এটি.closing = false;
+
+    এটি.serverCaps = 0;
+    এটি.statusFlags = 0;
+    এটি.charset = 33;
+
+    এটি.pending = [];
+    এটি.current = null;
+  }
+
+  অসমলয় connect() {
+    ধ্রুবক { address, family } = অপেক্ষা resolveHost(এটি.opts.host);
+
+    অপেক্ষা নতুন প্রতিশ্রুতি((resolve, reject) => {
+      ধ্রুবক sock = net.connect({ host: address, port: এটি.opts.port, family }, resolve);
+      sock.setNoDelay(true);
+      যদি (এটি.opts.keepAlive) sock.setKeepAlive(true, 15000);
+
+      ধ্রুবক to = setTimeout(() => sock.destroy(নতুন Error(ERRORS.TIMEOUT)), এটি.opts.connectTimeout);
+      sock.once("connect", () => clearTimeout(to));
+      sock.once("error", reject);
+      এটি.socket = sock;
+    });
+
+    এটি.socket.on("data", (chunk) => এটি._onData(chunk));
+    এটি.socket.on("close", () => এটি._onClose());
+    এটি.socket.on("error", (e) => এটি._onFatal(e));
+
+    ধ্রুবক handshake = অপেক্ষা এটি._readPacket("initial-handshake");
+    ধ্রুবক hs = parseInitialHandshake(handshake.payload);
+    এটি.serverCaps = hs.caps;
+    এটি.charset = hs.charset || 33;
+
+    এটি.seq = 1;
+
+    যদি (এটি.tls) {
+      ধ্রুবক sslCaps = desiredCaps(এটি.opts, এটি.serverCaps) | CAPABILITIES.CLIENT_SSL;
+      এটি._debug("send SSLRequest seq", এটি.seq);
+      এটি._writeRaw(buildSSLRequest(এটি._nextSeq(), sslCaps, 0x01000000, এটি.charset));
+      অপেক্ষা এটি._upgradeTLS();
+      এটি.recv = Buffer.alloc(0);
+    }
+
+    ধ্রুবক caps = desiredCaps(এটি.opts, এটি.serverCaps);
+    ধ্রুবক authPacket = buildHandshakeResponse41({
+      seq: এটি._nextSeq(),
+      user: এটি.opts.user,
+      password: এটি.opts.password,
+      database: এটি.opts.database,
+      authPlugin: hs.authPlugin || AUTH_PLUGINS.NATIVE,
+      authData: hs.authData,
+      caps,
+      charset: এটি.charset,
+    });
+    এটি._debug("send Handshake Response seq just used", (এটি.seq - 1) & 0xff);
+    এটি._writeRaw(authPacket);
+
+    অপেক্ষা এটি._handleAuthFlow();
+
+    এটি.connected = true;
+    ফেরত এটি;
+  }
+
+  query(sql, params) {
+    ধ্রুবক sqlStr = params ? require("./sql.bnl").format(sql, params) : String(sql);
+    ফেরত এটি._enqueue(অসমলয় () => {
+      এটি._resetSeq();
+      এটি._debug("COM_QUERY start seq", এটি.seq);
+      এটি._writeRaw(
+        buildCommandPacket(
+          এটি._nextSeq(),
+          COMMANDS.COM_QUERY,
+          Buffer.from(sqlStr, "utf8")
+        )
+      );
+      ধ্রুবক res = অপেক্ষা এটি._readResultSet();
+      ফেরত res;
+    });
+  }
+
+  ping() {
+    ফেরত এটি._enqueue(অসমলয় () => {
+      এটি._resetSeq();
+      এটি._writeRaw(buildCommandPacket(এটি._nextSeq(), COMMANDS.COM_PING)); // => 0
+      ধ্রুবক p = অপেক্ষা এটি._readPacket("ping");
+      ensureOK(p.payload);
+      ফেরত true;
+    });
+  }
+
+  অসমলয় end() {
+    যদি (!এটি.socket) ফেরত;
+    এটি.closing = true;
+    চেষ্টা {
+      এটি._resetSeq();
+      এটি._writeRaw(buildCommandPacket(এটি._nextSeq(), COMMANDS.COM_QUIT)); // => 0
+    } ধরুন { }
+    অপেক্ষা নতুন প্রতিশ্রুতি((r) => setTimeout(r, 20));
+    এটি.socket.destroy();
+    এটি.socket = null;
+    এটি.connected = false;
+  }
+
+  _enqueue(fn) {
+    ফেরত নতুন প্রতিশ্রুতি((resolve, reject) => {
+      ধ্রুবক task = { fn, resolve, reject };
+      এটি.pending.push(task);
+      এটি._drain();
+    });
+  }
+
+  অসমলয় _drain() {
+    যদি (এটি.current) ফেরত;
+    ধ্রুবক next = এটি.pending.shift();
+    যদি (!next) ফেরত;
+    এটি.current = next;
+    চেষ্টা {
+      ধ্রুবক val = অপেক্ষা next.fn();
+      next.resolve(val);
+    } ধরুন (e) {
+      next.reject(e);
+    } finally {
+      এটি.current = null;
+      এটি._drain();
+    }
+  }
+
+  _resetSeq() { এটি.seq = 0; }
+  _nextSeq() { ধ্রুবক id = এটি.seq & 0xff; এটি.seq = (এটি.seq + 1) & 0xff; ফেরত id; }
+
+  _writeRaw(buf) {
+    যদি (!এটি.socket) throw নতুন Error(ERRORS.CLOSED);
+    এটি.socket.write(buf);
+  }
+
+  _onData(chunk) { এটি.recv = Buffer.concat([এটি.recv, chunk]); }
+  _onClose() { যদি (!এটি.closing) এটি._onFatal(নতুন Error(ERRORS.CLOSED)); }
+  _onFatal(err) {
+    যদি (এটি.current) এটি.current.reject(err);
+    while (এটি.pending.length) এটি.pending.shযদিt().reject(err);
+  }
+
+  অসমলয় _readPacket(context = "read") {
+    ধ্রুবক deadline = এটি.opts.readTimeout > 0 ? Date.now() + এটি.opts.readTimeout : 0;
+
+    while (true) {
+      যদি (এটি.recv.length >= 4) {
+        ধ্রুবক len = এটি.recv.readUIntLE(0, 3);
+        ধ্রুবক total = 4 + len;
+        যদি (এটি.recv.length >= total) {
+          ধ্রুবক seq = এটি.recv[3];
+          ধ্রুবক payload = এটি.recv.slice(4, total);
+          এটি.recv = এটি.recv.slice(total);
+          ফেরত { seq, payload };
+        }
+      }
+      যদি (deadline && Date.now() > deadline) {
+        throw নতুন Error(`${ERRORS.TIMEOUT}: timed out waiting for packet during ${context}`);
+      }
+      অপেক্ষা নতুন প্রতিশ্রুতি((r) => setTimeout(r, 1));
+    }
+  }
+
+  অসমলয় _handleAuthFlow() {
+    ধ্রুবক p = অপেক্ষা এটি._readPacket("auth-step-1");
+    ধ্রুবক tag = p.payload[0];
+    এটি._debug("auth step tag", tag);
+
+    যদি (tag === 0x00) {
+      ফেরত;
+    }
+
+    যদি (tag === 0xfe && p.payload.length > 1) {
+      ধ্রুবক nul = p.payload.indexOf(0x00, 1);
+      ধ্রুবক plugin = p.payload.slice(1, nul).toString("utf8");
+      ধ্রুবক authData = p.payload.slice(nul + 1);
+      ধ্রুবক reply = require("./auth.bnl").authResponse(plugin, এটি.opts.password || "", authData);
+      এটি._writeRaw(makePacket(reply, এটি._nextSeq()));
+      ধ্রুবক ok = অপেক্ষা এটি._readPacket("auth-বিকল্প-ok");
+      ensureOK(ok.payload);
+      ফেরত;
+    }
+
+    যদি (tag === 0x01) {
+      ধ্রুবক second = অপেক্ষা এটি._readPacket("auth-more");
+      যদি (second.payload[0] === 0x00) ফেরত; // OK
+      যদি (second.payload[0] === 0x02 || second.payload[0] === 0x04) {
+        যদি (!এটি.tls) throw নতুন Error("Server requested RSA/clear auth without TLS");
+        ধ্রুবক pw = Buffer.from((এটি.opts.password || "") + "\0", "utf8");
+        এটি._writeRaw(makePacket(pw, এটি._nextSeq()));
+        ধ্রুবক ok = অপেক্ষা এটি._readPacket("auth-clear-ok");
+        ensureOK(ok.payload);
+        ফেরত;
+      }
+    }
+
+    ensureOK(p.payload);
+  }
+
+  _isLegacyEOF(b) { ফেরত b[0] === 0xfe && b.length < 9; }
+  _isOK(b)       { ফেরত b[0] === 0x00 && b.length >= 7; }
+  _isTerminator(b) { ফেরত এটি._isLegacyEOF(b) || এটি._isOK(b); }
+
+  অসমলয় _readPacketMaybe(context = "maybe", graceMs = 20) {
+  ধ্রুবক end = Date.now() + Math.max(0, graceMs);
+  while (true) {
+    যদি (এটি.recv.length >= 4) {
+      ধ্রুবক len = এটি.recv.readUIntLE(0, 3);
+      ধ্রুবক total = 4 + len;
+      যদি (এটি.recv.length >= total) {
+        ধ্রুবক seq = এটি.recv[3];
+        ধ্রুবক payload = এটি.recv.slice(4, total);
+        এটি.recv = এটি.recv.slice(total);
+        ফেরত { seq, payload };
+      }
+    }
+    যদি (Date.now() >= end) ফেরত null;
+    অপেক্ষা নতুন প্রতিশ্রুতি((r) => setTimeout(r, 1));
+  }
+}
+
+  অসমলয় _readResultSet() {
+  ধ্রুবক first = অপেক্ষা এটি._readPacket("result-first");
+  ধ্রুবক tag = first.payload[0];
+
+  যদি (tag === 0xff) throw parseErr(first.payload);
+  যদি (tag === 0x00) {
+    ধ্রুবক info = parseOK(first.payload);
+    ফেরত { affectedRows: info.affectedRows, insertId: info.insertId, rows: [] };
+  }
+
+  ধ্রুবক { readLenEncInt } = require("./packets.bnl");
+  ধ্রুবক [colCount] = readLenEncInt(first.payload, 0);
+  এটি._debug("colCount", colCount);
+
+  ধ্রুবক fields = [];
+  for (ধরি i = 0; i < colCount; i++) {
+    ধ্রুবক colPkt = অপেক্ষা এটি._readPacket("column-def");
+    যদি (colPkt.payload[0] === 0xff) throw parseErr(colPkt.payload);
+    fields.push(parseColumnName(colPkt.payload));
+  }
+
+  ধরি pkt = অপেক্ষা এটি._readPacket("after-columns");
+  ধ্রুবক rows = [];
+
+  যদি (এটি._isTerminator(pkt.payload)) {
+    ধ্রুবক maybe = অপেক্ষা এটি._readPacketMaybe("maybe-final", 20);
+    যদি (!maybe) {
+      ফেরত { rows };
+    }
+    যদি (এটি._isTerminator(maybe.payload)) {
+      ফেরত { rows };
+    }
+    rows.push(parseTextRowAsObject(maybe.payload, colCount, fields));
+    while (true) {
+      pkt = অপেক্ষা এটি._readPacket("row-or-end");
+      ধ্রুবক b = pkt.payload;
+      যদি (এটি._isTerminator(b)) break;
+      rows.push(parseTextRowAsObject(b, colCount, fields));
+    }
+    ফেরত { rows };
+  }
+
+  rows.push(parseTextRowAsObject(pkt.payload, colCount, fields));
+  while (true) {
+    pkt = অপেক্ষা এটি._readPacket("row-or-end");
+    ধ্রুবক b = pkt.payload;
+    যদি (এটি._isTerminator(b)) break;
+    rows.push(parseTextRowAsObject(b, colCount, fields));
+  }
+  ফেরত { rows };
+}
+
+  অসমলয় _upgradeTLS() {
+    এটি.socket.removeAllListeners("data");
+    এটি.socket.removeAllListeners("error");
+    এটি.socket.removeAllListeners("close");
+
+    ধ্রুবক tlsSock = tls.connect({
+      socket: এটি.socket,
+      servername: এটি.opts.host,
+      rejectUnauthorized: এটি.opts.ssl && এটি.opts.ssl.rejectUnauthorized !== false,
+      ...এটি.opts.ssl,
+    });
+
+    অপেক্ষা নতুন প্রতিশ্রুতি((resolve, reject) => {
+      tlsSock.once("secureConnect", resolve);
+      tlsSock.once("error", reject);
+    });
+
+    এটি.socket = tlsSock;
+    এটি.socket.on("data", (c) => এটি._onData(c));
+    এটি.socket.on("close", () => এটি._onClose());
+    এটি.socket.on("error", (e) => এটি._onFatal(e));
+  }
+
+  _debug(...a) {
+    যদি (এটি.opts.debug) {
+      চেষ্টা { console.log("[bnl-mysql]", ...a); } ধরুন { }
+    }
+  }
+}
+
+ফাংশন desiredCaps(opts, serverCaps) {
+  ধরি caps = 0;
+  caps |= CAPABILITIES.CLIENT_LONG_PASSWORD;
+  caps |= CAPABILITIES.CLIENT_LONG_FLAG;
+  caps |= CAPABILITIES.CLIENT_PROTOCOL_41;
+  caps |= CAPABILITIES.CLIENT_SECURE_CONNECTION;
+  caps |= CAPABILITIES.CLIENT_PLUGIN_AUTH;
+  caps |= CAPABILITIES.CLIENT_TRANSACTIONS;
+  caps |= CAPABILITIES.CLIENT_DEPRECATE_EOF;
+  যদি (opts.database) caps |= CAPABILITIES.CLIENT_CONNECT_WITH_DB;
+  যদি (opts.multipleStatements) caps |= CAPABILITIES.CLIENT_MULTI_STATEMENTS;
+  যদি (serverCaps & CAPABILITIES.CLIENT_MULTI_RESULTS) caps |= CAPABILITIES.CLIENT_MULTI_RESULTS;
+  ফেরত caps;
+}
+
+ফাংশন parseInitialHandshake(b) {
+  ধরি off = 0;
+  ধ্রুবক protocol = b[off++];
+
+  ধ্রুবক serverVersionEnd = b.indexOf(0x00, off);
+  ধ্রুবক serverVersion = b.slice(off, serverVersionEnd).toString("utf8");
+  off = serverVersionEnd + 1;
+
+  ধ্রুবক connectionId = b.readUInt32LE(off); off += 4;
+  ধ্রুবক auth1 = b.slice(off, off + 8); off += 8;
+  off += 1;
+
+  ধ্রুবক caps1 = b.readUInt16LE(off); off += 2;
+  ধরি caps = caps1;
+
+  ধরি charset = 33;
+  ধরি statusFlags = 0;
+  ধরি authPlugin = AUTH_PLUGINS.NATIVE;
+  ধরি authData = Buffer.alloc(0);
+
+  যদি (b.length >= off + 13) {
+    statusFlags = b.readUInt16LE(off); off += 2;
+    ধ্রুবক caps2 = b.readUInt16LE(off); off += 2; caps |= (caps2 << 16);
+
+    ধ্রুবক authLen = b[off++];
+    off += 10;
+
+    ধ্রুবক len = Math.max(13, authLen - 8);
+    ধ্রুবক auth2 = b.slice(off, off + len); off += len;
+
+    authData = Buffer.concat([auth1, auth2]).filter((x) => x !== 0x00);
+
+    ধ্রুবক nul = b.indexOf(0x00, off);
+    যদি (nul !== -1) authPlugin = b.slice(off, nul).toString("utf8");
+  }
+
+  ফেরত { protocol, serverVersion, connectionId, caps, statusFlags, charset, authPlugin, authData };
+}
+
+ফাংশন ensureOK(b) {
+  যদি (b[0] === 0xff) throw parseErr(b);
+  যদি (b[0] !== 0x00) throw নতুন Error(ERRORS.PROTOCOL + ": unexpected tag " + b[0]);
+}
+
+ফাংশন parseOK(b) {
+  ধ্রুবক { readLenEncInt } = require("./packets.bnl");
+  ধরি off = 1;
+  ধ্রুবক [affectedRows, o1] = readLenEncInt(b, off); off = o1;
+  ধ্রুবক [insertId, o2] = readLenEncInt(b, off); off = o2;
+  ধ্রুবক statusFlags = b.readUInt16LE(off); off += 2;
+  ধ্রুবক warnings = b.readUInt16LE(off); off += 2;
+  ধ্রুবক info = b.slice(off).toString("utf8");
+  ফেরত { affectedRows, insertId, statusFlags, warnings, info };
+}
+
+ফাংশন parseErr(b) {
+  ধরি off = 1;
+  ধ্রুবক code = b.readUInt16LE(off); off += 2;
+  ধরি sqlState = "";
+  যদি (b[off] === 0x23) { // '#'
+    off++;
+    sqlState = b.slice(off, off + 5).toString("ascii");
+    off += 5;
+  }
+  ধ্রুবক message = b.slice(off).toString("utf8");
+  ধ্রুবক err = নতুন Error(message);
+  err.code = code; err.sqlState = sqlState; err.fatal = true;
+  ফেরত err;
+}
+
+ফাংশন parseTextRow(b, colCount) {
+  ধ্রুবক { readLenEncInt } = require("./packets.bnl");
+  ধরি off = 0; ধ্রুবক row = [];
+  for (ধরি i = 0; i < colCount; i++) {
+    যদি (b[off] === 0xfb) { row.push(null); off += 1; continue; } // NULL
+    ধ্রুবক [len, n] = readLenEncInt(b, off); off = n;
+    row.push(b.slice(off, off + len).toString("utf8"));
+    off += len;
+  }
+  ফেরত row;
+}
+
+অসমলয় ফাংশন resolveHost(host) {
+  যদি (/^\d+\.\d+\.\d+\.\d+$/.test(host) || host === "localhost")
+    ফেরত { address: host, family: 4 };
+  ফেরত অপেক্ষা নতুন প্রতিশ্রুতি((resolve, reject) => {
+    dns.lookup(host, { all: true }, (err, addrs) => {
+      যদি (err) ফেরত reject(err);
+      ধ্রুবক a = addrs.find((x) => x.family === 4) || addrs[0];
+      resolve({ address: a.address, family: a.family });
+    });
+  });
+}
+
+module.exports = { Connection };

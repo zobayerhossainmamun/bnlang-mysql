@@ -1,0 +1,61 @@
+"use strict";
+
+ধ্রুবক { Buffer } = require("buffer");
+ধ্রুবক { makePacket } = require("./packets.bnl");
+ধ্রুবক { CAPABILITIES, AUTH_PLUGINS } = require("./constants.bnl");
+ধ্রুবক { authResponse } = require("./auth.bnl");
+
+ফাংশন buildSSLRequest(seq, caps, maxPacketSize, charset) {
+  ধ্রুবক payload = Buffer.allocUnsafe(32);
+  payload.writeUInt32LE(caps, 0);
+  payload.writeUInt32LE(maxPacketSize, 4);
+  payload[8] = charset;
+  payload.fill(0, 9, 32);
+  ফেরত makePacket(payload, seq);
+}
+
+ফাংশন buildHandshakeResponse41({
+  seq,
+  user,
+  password,
+  database,
+  authPlugin,
+  authData,
+  caps,
+  charset = 33,
+}) {
+  ধ্রুবক userBuf = Buffer.from(user || "", "utf8");
+  ধ্রুবক auth = authResponse(authPlugin, password || "", authData);
+  ধ্রুবক dbBuf = Buffer.from(database || "", "utf8");
+  ধ্রুবক pluginBuf = Buffer.from(authPlugin || AUTH_PLUGINS.NATIVE, "utf8");
+
+  ধ্রুবক fixed = Buffer.allocUnsafe(32);
+  fixed.writeUInt32LE(caps, 0);
+  fixed.writeUInt32LE(0x01000000, 4);
+  fixed[8] = charset;
+  fixed.fill(0, 9, 32);
+
+  ধ্রুবক parts = [
+    fixed,
+    userBuf, Buffer.from([0x00]),
+    Buffer.from([auth.length]), auth,
+  ];
+  যদি (caps & CAPABILITIES.CLIENT_CONNECT_WITH_DB) {
+    parts.push(dbBuf, Buffer.from([0x00]));
+  }
+  যদি (caps & CAPABILITIES.CLIENT_PLUGIN_AUTH) {
+    parts.push(pluginBuf, Buffer.from([0x00]));
+  }
+  ফেরত makePacket(Buffer.concat(parts), seq);
+}
+
+ফাংশন buildCommandPacket(seq, cmd, chunk) {
+  ধ্রুবক payload = chunk ? Buffer.concat([Buffer.from([cmd]), chunk]) : Buffer.from([cmd]);
+  ফেরত makePacket(payload, seq);
+}
+
+module.exports = {
+  buildSSLRequest,
+  buildHandshakeResponse41,
+  buildCommandPacket,
+};

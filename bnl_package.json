@@ -1,0 +1,18 @@
+{
+  "name": "bnlang-mysql",
+  "version": "1.0.0",
+  "description": "A lightweight, fast, and ergonomic MySQL client for Bnlang.",
+  "main": "index.bnl",
+  "scripts": {},
+  "keywords": ["mysql", "database", "bnl"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zobayerhossainmamun/mysql.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zobayerhossainmamun/mysql/issues"
+  },
+  "author": "Mamun",
+  "license": "MIT",
+  "dependencies": {}
+}

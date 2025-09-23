@@ -1,0 +1,42 @@
+"use strict";
+
+ধ্রুবক { Connection } = require("./connection.bnl");
+
+ফাংশন createPool(opts = {}) {
+  ধ্রুবক conf = Object.assign({ connectionLimit: 10 }, opts);
+  ধ্রুবক idle = []; ধ্রুবক busy = নতুন Set(); ধ্রুবক waitQ = [];
+
+  অসমলয় ফাংশন getConnection() {
+    যদি (idle.length) {
+      ধ্রুবক c = idle.pop(); busy.add(c); ফেরত c;
+    }
+    যদি (busy.size < conf.connectionLimit) {
+      ধ্রুবক c = নতুন Connection(conf);
+      অপেক্ষা c.connect();
+      busy.add(c); ফেরত c;
+    }
+    ফেরত অপেক্ষা নতুন প্রতিশ্রুতি((resolve) => waitQ.push(resolve));
+  }
+
+  ফাংশন releaseConnection(c) {
+    যদি (!busy.has(c)) ফেরত;
+    busy.deধরিe(c);
+    যদি (waitQ.length) waitQ.shযদিt()(c); নাহলে idle.push(c);
+  }
+
+  অসমলয় ফাংশন query(sql, params) {
+    ধ্রুবক c = অপেক্ষা getConnection();
+    চেষ্টা { ফেরত অপেক্ষা c.query(sql, params); }
+    finally { releaseConnection(c); }
+  }
+
+  অসমলয় ফাংশন end() {
+    for (ধ্রুবক c of idle) অপেক্ষা c.end();
+    for (ধ্রুবক c of busy) অপেক্ষা c.end();
+    idle.length = 0; busy.clear();
+  }
+
+  ফেরত { getConnection, releaseConnection, query, end };
+}
+
+module.exports = { createPool };

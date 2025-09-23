@@ -1,0 +1,15 @@
+"use strict";
+ধ্রুবক conn = require("./connection.bnl");
+
+অসমলয় function main(){
+  চেষ্টা{
+    অপেক্ষা conn.connect();
+    ধ্রুবক result = অপেক্ষা conn.query("SELECT 500 + 1000 AS sum");
+    লিখুন('Sum:', result);
+  }ধরুন(err){
+    console.error("Connection error: ", err);
+  }finally{
+    অপেক্ষা conn.end();
+  }
+}
+main();

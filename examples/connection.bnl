@@ -1,0 +1,13 @@
+ধ্রুবক mysql = require("../index.bnl");
+
+ধ্রুবক conn = mysql.createConnection({
+  host: "127.0.0.1",
+  user: "root",
+  password: "",
+  database: "myapp",
+  port: 3306,
+  ssl: false,
+  debug: false
+});
+
+module.exports = conn;
