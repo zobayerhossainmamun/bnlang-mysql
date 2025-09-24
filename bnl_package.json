@@ -7,10 +7,10 @@
   "keywords": ["mysql", "database", "bnl"],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zobayerhossainmamun/mysql.git"
+    "url": "git+https://github.com/zobayerhossainmamun/bnlang-mysql.git"
   },
   "bugs": {
-    "url": "https://github.com/zobayerhossainmamun/mysql/issues"
+    "url": "https://github.com/zobayerhossainmamun/bnlang-mysql/issues"
   },
   "author": "Mamun",
   "license": "MIT",
