@@ -117,4 +117,5 @@ Please open an issue describing the change before sending a large PR.
 
 ## License
 
-RouteOn is licensed under the [MIT License](./LICENSE).
+
+bnlang-mysql is licensed under the [MIT License](./LICENSE).
